@@ -331,3 +331,59 @@ fn argsRest(args: [][]const u8, idx: usize) ?[][]const u8 {
     if (idx >= args.len) return null;
     return args[idx..];
 }
+
+const progstr =
+    \\ const std = @import("std");
+    \\ pub fn main() !void {
+    \\     std.process.exit(1);
+    \\ }
+;
+
+const buildstr =
+    \\ const std = @import("std");
+    \\ pub fn build(b: *std.build.Builder) void {
+    \\     const exe = b.addExecutable("source", "source.zig");
+    \\     exe.install();
+    \\     const run_cmd = exe.run();
+    \\     run_cmd.step.dependOn(b.getInstallStep());
+    \\     const run_step = b.step("run", "Run");
+    \\     run_step.dependOn(&run_cmd.step);
+    \\ }
+;
+
+test "issue 10381" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var it = try std.process.argsWithAllocator(allocator);
+    const testargs = try testing.getTestArgs(&it);
+    defer it.deinit();
+
+    var tmpdir = testing.tmpDir(.{ .no_follow = true });
+    defer tmpdir.cleanup();
+    const tmpdir_path = try tmpdir.getFullPath(allocator);
+    defer allocator.free(tmpdir_path);
+
+    try tmpdir.dir.writeFile("source.zig", progstr);
+    try tmpdir.dir.writeFile("build.zig", buildstr);
+
+    const cwd_path = try std.process.getCwdAlloc(allocator);
+    const lib_dir = try std.fs.path.join(allocator, &.{ cwd_path, "lib" });
+    defer {
+        allocator.free(cwd_path);
+        allocator.free(lib_dir);
+    }
+
+    const result = try testing.runZigBuild(testargs.zigexec, .{
+        .subcmd = "run",
+        .cwd = tmpdir_path,
+        .lib_dir = lib_dir,
+    });
+    defer {
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+    }
+
+    try testing.expectEqual(result.term, .{ .Exited = 1 });
+    try testing.expect(std.mem.indexOf(u8, result.stderr, "error: UnexpectedExitCode") == null);
+}
